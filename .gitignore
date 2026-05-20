@@ -4,6 +4,10 @@
 !.env.example
 !.gitignore
 !.github/
+!.trellis/
+
+# Trellis 本地 workspace/journal 状态
+.trellis/workspace/
 
 # 敏感文件
 *.pem

@@ -1,0 +1,9 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend feature spans handlers, services, repositories, migrations, and permissions; load backend spec entry point."}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"New note modules should follow backend package and file organization conventions."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Task adds migrations and tenant/user-scoped persistence tables for notes, notebooks, tags, and publications."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Handlers and services need consistent error behavior for privacy, permissions, import failures, and push failures."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Push/import/recycle-bin cleanup failures should follow project logging conventions."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Implementation must follow backend quality rules and validation expectations."}
+{"file":".trellis/spec/guides/index.md","reason":"Feature spans backend, frontend, database, permissions, and async ingestion; load shared thinking guide index."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Personal notes require consistent API, service, database, and UI data flow."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Implementation should reuse manual knowledge ingestion, editor, favorites, recents, list state, and import patterns."}

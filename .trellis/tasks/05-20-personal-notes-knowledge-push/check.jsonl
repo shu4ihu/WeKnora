@@ -1,0 +1,9 @@
+{"file":".trellis/spec/backend/index.md","reason":"Check agent should verify backend implementation against the backend spec entry point."}
+{"file":".trellis/spec/backend/directory-structure.md","reason":"Review new files and modules for expected backend organization."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Review migrations, tenant/user scoping, soft deletion, and query behavior."}
+{"file":".trellis/spec/backend/error-handling.md","reason":"Review API/service errors for permission failures, import partial failures, and push edge cases."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Review logging around async push, import, and cleanup paths."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Run and assess quality checks with project expectations."}
+{"file":".trellis/spec/guides/index.md","reason":"Check agent should use shared guide index for cross-layer and reuse review."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Review consistency across database, backend APIs, frontend UI, and async knowledge ingestion."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Review whether implementation reuses existing knowledge ingestion, editor, favorites, recents, and import/list patterns appropriately."}
