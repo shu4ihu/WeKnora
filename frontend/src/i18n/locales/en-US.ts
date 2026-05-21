@@ -780,6 +780,9 @@ export default {
       mineruCloudApiKeyPlaceholder: 'MinerU Cloud API Key',
       vlmLabel: 'vlm (Visual Language Model)',
       mineruHtmlLabel: 'MinerU-HTML (HTML Parsing)',
+      serverUrl: 'Server URL',
+      vlmServerUrlPlaceholder: 'e.g. http://your-vllm-server:8000',
+      vlmServerUrlHint: 'Required when Backend is vlm-http-client or hybrid-http-client',
     },
     storage: {
       title: 'Storage Engine',
@@ -3886,6 +3889,8 @@ export default {
       searchKbFailed: 'Knowledge base search failed',
       webSearch: 'Web search',
       webSearchFailed: 'Web search failed',
+      grepSearch: 'Keyword search',
+      grepSearchFailed: 'Keyword search failed',
       getDocInfo: 'Getting document info',
       getDocInfoFailed: 'Failed to get document info',
       thinkingDone: 'Thinking complete',

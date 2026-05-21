@@ -643,6 +643,9 @@ export default {
       mineruCloudApiKeyPlaceholder: 'MinerU 클라우드 API Key',
       vlmLabel: 'vlm (시각 언어 모델)',
       mineruHtmlLabel: 'MinerU-HTML (HTML 파싱)',
+      serverUrl: '서버 URL',
+      vlmServerUrlPlaceholder: '예: http://your-vllm-server:8000',
+      vlmServerUrlHint: 'Backend가 vlm-http-client 또는 hybrid-http-client인 경우 필요',
     },
     storage: {
       title: '스토리지 엔진',
@@ -3949,6 +3952,8 @@ export default {
       searchKbFailed: '지식베이스 검색 실패',
       webSearch: '웹 검색',
       webSearchFailed: '웹 검색 실패',
+      grepSearch: '키워드 검색',
+      grepSearchFailed: '키워드 검색 실패',
       getDocInfo: '문서 정보 조회',
       getDocInfoFailed: '문서 정보 조회 실패',
       thinkingDone: '사고 완료',
