@@ -3,11 +3,13 @@ package notion
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/datasource"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -123,10 +125,16 @@ func (c *Connector) FetchAll(ctx context.Context, config *types.DataSourceConfig
 			allItems = append(allItems, c.fetchPage(ctx, client, page, visited)...)
 			continue
 		}
-		// Not a page — treat as database/data_source.
+		if !errors.Is(err, datasource.ErrResourceNotFound) {
+			return nil, fmt.Errorf("get notion page %s: %w", resourceID, err)
+		}
+		// Only a 404 means this is not a page, so treat it as a database/data_source.
 		// fetchDatabase handles both data_source IDs (from search) and
 		// database container IDs (from child_database blocks).
-		items := c.fetchDatabase(ctx, client, resourceID, visited)
+		items, err := c.fetchDatabaseWithError(ctx, client, resourceID, visited)
+		if err != nil {
+			return nil, fmt.Errorf("fetch notion database %s: %w", resourceID, err)
+		}
 		if len(items) == 0 {
 			logger.Warnf(ctx, "[Notion] failed to fetch resource %s as page or database", resourceID)
 		}
@@ -190,7 +198,10 @@ func (c *Connector) FetchIncremental(ctx context.Context, config *types.DataSour
 
 	// Subsequent syncs: discover all pages, diff against cursor, fetch only changes
 	logger.Infof(ctx, "[Notion] incremental sync, discovering pages")
-	pages, fetchVisited := c.discoverAllResources(ctx, client, resourceIDs)
+	pages, fetchVisited, err := c.discoverAllResources(ctx, client, resourceIDs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("discover notion resources: %w", err)
+	}
 	logger.Infof(ctx, "[Notion] discovered %d pages", len(pages))
 
 	newEditTimes := make(map[string]time.Time)
@@ -220,7 +231,10 @@ func (c *Connector) FetchIncremental(ctx context.Context, config *types.DataSour
 		if pg.isDatabase() {
 			// Incremental database sync: query records, diff against cursor,
 			// only fetch blocks for records whose edit time actually changed.
-			items, recordEditTimes := c.fetchDatabaseIncremental(ctx, client, pg.ID, prevCursor.PageEditTimes, fetchVisited)
+			items, recordEditTimes, err := c.fetchDatabaseIncremental(ctx, client, pg.ID, prevCursor.PageEditTimes, fetchVisited)
+			if err != nil {
+				return nil, nil, fmt.Errorf("fetch notion database incremental %s: %w", pg.ID, err)
+			}
 			changedItems = append(changedItems, items...)
 			// Merge record-level edit times into the cursor
 			for rid, rt := range recordEditTimes {
@@ -385,18 +399,26 @@ func (c *Connector) fetchPage(ctx context.Context, client *notionClient, page *n
 // fetchDatabase syncs each database record as an individual knowledge item (full sync).
 // Accepts either a data_source_id (from search) or database_id (from child_database blocks).
 func (c *Connector) fetchDatabase(ctx context.Context, client *notionClient, id string, visited map[string]bool) []types.FetchedItem {
+	items, _ := c.fetchDatabaseWithError(ctx, client, id, visited)
+	return items
+}
+
+func (c *Connector) fetchDatabaseWithError(ctx context.Context, client *notionClient, id string, visited map[string]bool) ([]types.FetchedItem, error) {
 	if visited[id] {
-		return nil
+		return nil, nil
 	}
 	visited[id] = true
 
 	records, dbTitle, queryID, err := c.queryDatabaseRecords(ctx, client, id)
-	if err != nil || len(records) == 0 {
-		return nil
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return nil, nil
 	}
 	if queryID != "" && queryID != id {
 		if visited[queryID] {
-			return nil
+			return nil, nil
 		}
 		visited[queryID] = true
 	}
@@ -407,26 +429,26 @@ func (c *Connector) fetchDatabase(ctx context.Context, client *notionClient, id 
 
 	item := c.buildDatabaseItem(ctx, client, id, dbTitle, records)
 	if item != nil {
-		return []types.FetchedItem{*item}
+		return []types.FetchedItem{*item}, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // fetchDatabaseIncremental syncs only changed records by comparing edit times against cursor.
 // Returns fetched items and a map of record_id → edit_time for cursor update.
-func (c *Connector) fetchDatabaseIncremental(ctx context.Context, client *notionClient, id string, prevEditTimes map[string]time.Time, visited map[string]bool) ([]types.FetchedItem, map[string]time.Time) {
+func (c *Connector) fetchDatabaseIncremental(ctx context.Context, client *notionClient, id string, prevEditTimes map[string]time.Time, visited map[string]bool) ([]types.FetchedItem, map[string]time.Time, error) {
 	if visited[id] {
-		return nil, nil
+		return nil, nil, nil
 	}
 	visited[id] = true
 
 	records, dbTitle, queryID, err := c.queryDatabaseRecords(ctx, client, id)
 	if err != nil {
-		return nil, nil
+		return nil, nil, err
 	}
 	if queryID != "" && queryID != id {
 		if visited[queryID] {
-			return nil, nil
+			return nil, nil, nil
 		}
 		visited[queryID] = true
 	}
@@ -454,11 +476,11 @@ func (c *Connector) fetchDatabaseIncremental(ctx context.Context, client *notion
 	if changedCount > 0 || len(prevEditTimes) == 0 {
 		item := c.buildDatabaseItem(ctx, client, id, dbTitle, records)
 		if item != nil {
-			return []types.FetchedItem{*item}, recordEditTimes
+			return []types.FetchedItem{*item}, recordEditTimes, nil
 		}
 	}
 
-	return nil, recordEditTimes
+	return nil, recordEditTimes, nil
 }
 
 // queryDatabaseRecords resolves the database ID and queries all records.
@@ -642,11 +664,11 @@ func (c *Connector) buildDatabaseItem(ctx context.Context, client *notionClient,
 // Returns the included pages plus the excluded set (visible pages NOT under any
 // selected root) so callers can seed `visited` for child-block recursion without
 // a second SearchPages round-trip.
-func (c *Connector) discoverAllResources(ctx context.Context, client *notionClient, resourceIDs []string) (included []notionPage, excluded map[string]bool) {
+func (c *Connector) discoverAllResources(ctx context.Context, client *notionClient, resourceIDs []string) (included []notionPage, excluded map[string]bool, err error) {
 	allPages, err := client.SearchPages(ctx)
 	if err != nil {
 		logger.Warnf(ctx, "[Notion] failed to search pages for discovery: %v", err)
-		return nil, nil
+		return nil, nil, err
 	}
 
 	// data_source objects use database_parent for workspace hierarchy.
@@ -698,7 +720,7 @@ func (c *Connector) discoverAllResources(ctx context.Context, client *notionClie
 			excluded[id] = true
 		}
 	}
-	return included, excluded
+	return included, excluded, nil
 }
 
 // --- File upload resolution ---
@@ -869,6 +891,9 @@ func getDatabaseOrDataSourceInfo(ctx context.Context, client *notionClient, id s
 	ds, err := client.GetDataSourceInfo(ctx, id)
 	if err == nil {
 		return &databaseInfo{Page: *ds, DataSourceID: id}, nil
+	}
+	if !errors.Is(err, datasource.ErrResourceNotFound) {
+		return nil, fmt.Errorf("get data_source %s: %w", id, err)
 	}
 	return client.GetDatabaseInfo(ctx, id)
 }

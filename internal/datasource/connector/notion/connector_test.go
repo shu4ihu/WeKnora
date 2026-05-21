@@ -2,9 +2,14 @@ package notion
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/Tencent/WeKnora/internal/datasource"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -148,6 +153,73 @@ func TestConnectorFetchAll_Database(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchAll_DoesNotTreatAuthFailureAsDatabase(t *testing.T) {
+	mux := http.NewServeMux()
+	writeUnauthorized := func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  http.StatusUnauthorized,
+			"code":    "unauthorized",
+			"message": "API token is invalid.",
+		})
+	}
+	mux.HandleFunc("/v1/search", writeUnauthorized)
+	mux.HandleFunc("/v1/pages/page-1", writeUnauthorized)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	c := NewConnector()
+	_, err := c.FetchAll(context.Background(), makeNotionConfig(&Config{APIKey: "bad-token"}, server.URL, []string{"page-1"}), []string{"page-1"})
+	if err == nil {
+		t.Fatal("expected fetch error")
+	}
+	if !errors.Is(err, datasource.ErrInvalidCredentials) {
+		t.Fatalf("expected invalid credentials error, got %v", err)
+	}
+}
+
+func TestConnectorFetchAll_DoesNotFallbackFromDataSourceAuthFailureToDatabase(t *testing.T) {
+	databaseFallbackCalls := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/search", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"object":      "list",
+			"results":     []interface{}{},
+			"has_more":    false,
+			"next_cursor": nil,
+		})
+	})
+	mux.HandleFunc("/v1/pages/db-bad", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/v1/data_sources/db-bad", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  http.StatusUnauthorized,
+			"code":    "unauthorized",
+			"message": "API token is invalid.",
+		})
+	})
+	mux.HandleFunc("/v1/databases/db-bad", func(w http.ResponseWriter, r *http.Request) {
+		databaseFallbackCalls++
+		http.NotFound(w, r)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	c := NewConnector()
+	_, err := c.FetchAll(context.Background(), makeNotionConfig(&Config{APIKey: "bad-token"}, server.URL, []string{"db-bad"}), []string{"db-bad"})
+	if err == nil {
+		t.Fatal("expected fetch error")
+	}
+	if !errors.Is(err, datasource.ErrInvalidCredentials) {
+		t.Fatalf("expected invalid credentials error, got %v", err)
+	}
+	if databaseFallbackCalls != 0 {
+		t.Fatalf("expected no database fallback for data_source auth failure, got %d calls", databaseFallbackCalls)
+	}
+}
+
 // TestConnectorFetchAll_SingleRecord verifies that selecting a single database
 // row by ID routes through fetchPage's record-detection branch and produces an
 // item via buildRecordItem (instead of being silently dropped as an empty page).
@@ -207,6 +279,102 @@ func TestConnectorFetchIncremental_NoChanges(t *testing.T) {
 	}
 	if newCursor == nil {
 		t.Fatal("expected non-nil cursor")
+	}
+}
+
+func TestConnectorFetchIncremental_ReturnsDiscoveryError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/search", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  http.StatusUnauthorized,
+			"code":    "unauthorized",
+			"message": "API token is invalid.",
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	c := NewConnector()
+	config := makeNotionConfig(&Config{APIKey: "bad-token"}, server.URL, []string{"page-1"})
+	cursor := &types.SyncCursor{
+		ConnectorCursor: map[string]interface{}{
+			"page_edit_times": map[string]interface{}{
+				"page-1": "2026-01-15T10:00:00Z",
+			},
+		},
+	}
+
+	items, newCursor, err := c.FetchIncremental(context.Background(), config, cursor)
+	if err == nil {
+		t.Fatal("expected discovery error")
+	}
+	if !errors.Is(err, datasource.ErrInvalidCredentials) {
+		t.Fatalf("expected invalid credentials error, got %v", err)
+	}
+	if len(items) != 0 || newCursor != nil {
+		t.Fatalf("expected no items/cursor on discovery failure, got items=%d cursor=%#v", len(items), newCursor)
+	}
+}
+
+func TestConnectorFetchIncremental_ReturnsDatabaseQueryError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/search", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"object": "list",
+			"results": []interface{}{
+				map[string]interface{}{
+					"id":               "db-bad",
+					"object":           "data_source",
+					"url":              "https://notion.so/DB-Bad",
+					"last_edited_time": "2026-01-16T10:00:00.000Z",
+					"in_trash":         false,
+					"parent":           map[string]interface{}{"type": "workspace", "workspace": true},
+					"title":            []interface{}{map[string]interface{}{"plain_text": "Bad Database"}},
+				},
+			},
+			"has_more":    false,
+			"next_cursor": nil,
+		})
+	})
+	mux.HandleFunc("/v1/data_sources/db-bad", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":     "db-bad",
+			"object": "data_source",
+			"title":  []interface{}{map[string]interface{}{"plain_text": "Bad Database"}},
+		})
+	})
+	mux.HandleFunc("/v1/data_sources/db-bad/query", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  http.StatusUnauthorized,
+			"code":    "unauthorized",
+			"message": "API token is invalid.",
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	c := NewConnector()
+	config := makeNotionConfig(&Config{APIKey: "bad-token"}, server.URL, []string{"db-bad"})
+	cursor := &types.SyncCursor{
+		ConnectorCursor: map[string]interface{}{
+			"page_edit_times": map[string]interface{}{
+				"db-bad":   "2026-01-15T10:00:00Z",
+				"record-1": "2026-01-15T10:00:00Z",
+			},
+		},
+	}
+
+	items, newCursor, err := c.FetchIncremental(context.Background(), config, cursor)
+	if err == nil {
+		t.Fatal("expected database query error")
+	}
+	if !errors.Is(err, datasource.ErrInvalidCredentials) {
+		t.Fatalf("expected invalid credentials error, got %v", err)
+	}
+	if len(items) != 0 || newCursor != nil {
+		t.Fatalf("expected no items/cursor on database query failure, got items=%d cursor=%#v", len(items), newCursor)
 	}
 }
 

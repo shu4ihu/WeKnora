@@ -3,10 +3,14 @@ package notion
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/Tencent/WeKnora/internal/datasource"
 )
 
 // fakeNotion builds an httptest.Server that emulates relevant Notion API endpoints.
@@ -328,6 +332,77 @@ func TestClientQueryDatabaseAll(t *testing.T) {
 	}
 	if records[0].ID != "record-1" {
 		t.Errorf("record ID = %q", records[0].ID)
+	}
+}
+
+func TestClientDoRequest_RebuildsPostBodyOnRetry(t *testing.T) {
+	attempts := 0
+	var handlerErr error
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/retry", func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			handlerErr = fmt.Errorf("decode request body on attempt %d: %w", attempts, err)
+			http.Error(w, handlerErr.Error(), http.StatusBadRequest)
+			return
+		}
+		if body["name"] != "notion" {
+			handlerErr = fmt.Errorf("request body on attempt %d = %#v", attempts, body)
+			http.Error(w, handlerErr.Error(), http.StatusBadRequest)
+			return
+		}
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "0.001")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"message": "rate limited"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := newClient("test-token", server.URL)
+	if _, err := client.doRequest(context.Background(), http.MethodPost, "/v1/retry", map[string]string{"name": "notion"}); err != nil {
+		t.Fatalf("doRequest() error: %v", err)
+	}
+	if handlerErr != nil {
+		t.Fatal(handlerErr)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+}
+
+func TestClientQueryDatabaseAll_DoesNotFallbackOnNon404(t *testing.T) {
+	databaseFallbackCalls := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/data_sources/bad/query", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  http.StatusUnauthorized,
+			"code":    "unauthorized",
+			"message": "API token is invalid.",
+		})
+	})
+	mux.HandleFunc("/v1/databases/bad", func(w http.ResponseWriter, r *http.Request) {
+		databaseFallbackCalls++
+		http.NotFound(w, r)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := newClient("bad-token", server.URL)
+	_, err := client.QueryDatabaseAll(context.Background(), "bad")
+	if err == nil {
+		t.Fatal("expected query error")
+	}
+	if !errors.Is(err, datasource.ErrInvalidCredentials) {
+		t.Fatalf("expected invalid credentials error, got %v", err)
+	}
+	if databaseFallbackCalls != 0 {
+		t.Fatalf("expected no database fallback for non-404 error, got %d calls", databaseFallbackCalls)
 	}
 }
 

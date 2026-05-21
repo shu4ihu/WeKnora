@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -58,31 +59,29 @@ func (c *notionClient) doRequest(ctx context.Context, method, path string, body 
 		return nil, fmt.Errorf("rate limiter: %w", err)
 	}
 
-	var bodyReader io.Reader
+	var bodyBytes []byte
 	if body != nil {
-		bodyBytes, err := json.Marshal(body)
+		var err error
+		bodyBytes, err = json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("marshal request body: %w", err)
 		}
-		bodyReader = bytes.NewReader(bodyBytes)
 	}
-
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Notion-Version", NotionAPIVersion)
-	req.Header.Set("Content-Type", "application/json")
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if attempt > 0 {
-			if body != nil {
-				bodyBytes, _ := json.Marshal(body)
-				req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			}
+		var bodyReader io.Reader
+		if bodyBytes != nil {
+			bodyReader = bytes.NewReader(bodyBytes)
 		}
+
+		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("Notion-Version", NotionAPIVersion)
+		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
@@ -266,7 +265,7 @@ func (c *notionClient) GetBlockChildrenFlat(ctx context.Context, blockID string)
 	return allBlocks, nil
 }
 
-const maxBlockDepth = 5    // Limit recursion depth — deeper content has diminishing value for knowledge bases
+const maxBlockDepth = 5       // Limit recursion depth — deeper content has diminishing value for knowledge bases
 const maxBlocksPerPage = 1000 // Limit total blocks fetched per page to prevent runaway API calls
 
 // GetBlockChildrenAll recursively fetches all blocks under a given block ID,
@@ -344,7 +343,14 @@ func (c *notionClient) QueryDatabaseAll(ctx context.Context, id string) ([]notio
 		return records, nil
 	}
 
-	// If 404, id might be a database container ID — resolve to data_source_id
+	// If 404, id might be a database container ID — resolve to data_source_id.
+	// Other errors (credentials, rate limits, transient server errors) should not
+	// silently switch modes because that hides the real failure and performs
+	// unnecessary extra API calls.
+	if !errors.Is(err, datasource.ErrResourceNotFound) {
+		return nil, fmt.Errorf("query data_source %s: %w", id, err)
+	}
+
 	info, dbErr := c.GetDatabaseInfo(ctx, id)
 	if dbErr != nil {
 		return nil, fmt.Errorf("query database %s: not a data_source (%v) and not a database (%v)", id, err, dbErr)
