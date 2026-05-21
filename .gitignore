@@ -5,6 +5,12 @@
 !.gitignore
 !.github/
 !.trellis/
+!.pi/
+.pi/*
+!.pi/skills/
+.pi/skills/*
+!.pi/skills/go-code-doc-notion/
+!.pi/skills/go-code-doc-notion/SKILL.md
 
 # Trellis 本地 workspace/journal 状态
 .trellis/workspace/
